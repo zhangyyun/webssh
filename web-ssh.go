@@ -1,39 +1,69 @@
 package webssh
 
 import (
+	"encoding/json"
 	"io"
-	"io/ioutil"
 	"log"
 	"net"
-	"sync"
-	"time"
+	"os"
 
 	"github.com/gorilla/websocket"
 	"github.com/pkg/errors"
 	"golang.org/x/crypto/ssh"
 )
 
-// NewWebSSH 新建对象
-func NewWebSSH() *WebSSH {
+func NewWebSSH(id string) *WebSSH {
 	return &WebSSH{
-		buffSize: 512,
-		expired:  time.Minute,
-		logger:   log.New(ioutil.Discard, "[webssh] ", log.Ltime|log.Ldate),
+		id:       id,
+		buffSize: 256 * 1024,
+		logger:   log.New(os.Stdout, "[webssh] ", log.Ltime|log.Ldate),
 	}
 }
 
-// WebSSH Websocket和ssh
-type WebSSH struct {
-	logger   *log.Logger
-	store    sync.Map
-	expired  time.Duration
-	buffSize uint32
+type session struct {
+	sess *ssh.Session
+
+	stdin  io.WriteCloser
+	stdout io.Reader
+	stderr io.Reader
 }
-type storeValue struct {
+
+func (s *session) close() {
+	if s.sess != nil {
+		s.sess.Close()
+	}
+	if s.stdin != nil {
+		s.stdin.Close()
+	}
+}
+
+type WebSSH struct {
 	id        string
+	logger    *log.Logger
+	buffSize  uint32
 	websocket *websocket.Conn
-	conn      net.Conn
-	createdAt time.Time
+	conn      *ssh.Client
+	sshSess   *session
+	sftpSess  *session
+}
+
+func (ws *WebSSH) Cleanup() {
+	if ws.sshSess != nil {
+		ws.sshSess.close()
+	}
+	if ws.sftpSess != nil {
+		ws.sftpSess.close()
+	}
+	if ws.conn != nil {
+		ws.conn.Close()
+	}
+	if ws.websocket != nil {
+		ws.websocket.Close()
+	}
+}
+
+func (ws *WebSSH) SetId(id string) {
+	ws.id = id
 }
 
 // SetLogger set logger
@@ -54,160 +84,152 @@ func (ws *WebSSH) SetLogOut(out io.Writer) *WebSSH {
 	return ws
 }
 
-// SetExpired set logger
-func (ws *WebSSH) SetExpired(expired time.Duration) *WebSSH {
-	ws.expired = expired
-	return ws
-}
-
 // AddWebsocket add websocket connect
-func (ws *WebSSH) AddWebsocket(id string, conn *websocket.Conn) {
-	ws.logger.Println("add websocket", id)
+func (ws *WebSSH) AddWebsocket(conn *websocket.Conn) {
+	ws.logger.Println("add websocket", ws.id)
 
-	ws.checkExpired()
-	v, loaded := ws.store.LoadOrStore(id, &storeValue{websocket: conn, id: id, createdAt: time.Now()})
-	if !loaded {
-		return
-	}
-	value := v.(*storeValue)
-	value.websocket = conn
+	ws.websocket = conn
+
 	go func() {
-		ws.logger.Printf("%s server exit %v", id, ws.server(value))
+		ws.logger.Printf("%s server exit %v", ws.id, ws.server())
 	}()
 }
 
-// AddSSHConn add ssh netword connect
-func (ws *WebSSH) AddSSHConn(id string, conn net.Conn) {
-	ws.logger.Println("add ssh conn", id)
+func (ws *WebSSH) server() error {
+	defer ws.Cleanup()
 
-	ws.checkExpired()
-	v, loaded := ws.store.LoadOrStore(id, &storeValue{conn: conn, id: id, createdAt: time.Now()})
-	if !loaded {
-		return
+	if err := ws.transformOutput(ws.sshSess, ws.sftpSess, ws.websocket); err != nil {
+		return err
 	}
-	value := v.(*storeValue)
-	value.conn = conn
-	go func() {
-		ws.logger.Printf("(%s) server exit %v", id, ws.server(value))
-	}()
-}
 
-func (ws *WebSSH) checkExpired() {
-	now := time.Now()
-	ws.store.Range(func(key, v interface{}) bool {
-		value := v.(*storeValue)
-		if now.Sub(value.createdAt) > time.Minute {
-			ws.store.Delete(key)
-			if value.websocket != nil {
-				value.websocket.Close()
-			}
-			if value.conn != nil {
-				value.conn.Close()
-			}
-		}
-		return true
-	})
-}
-
-// server connect ssh conn to websocket
-func (ws *WebSSH) server(value *storeValue) error {
-	ws.store.Delete(value.id)
-	ws.logger.Println("server", value)
-	defer value.websocket.Close()
-	defer value.conn.Close()
-
-	config := ssh.ClientConfig{
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+	// Start remote shell
+	if err := ws.sshSess.sess.Shell(); err != nil {
+		return errors.Wrap(err, "shell")
 	}
-	var session *ssh.Session
-	var stdin io.WriteCloser
 	for {
 		var msg message
-		err := value.websocket.ReadJSON(&msg)
+		msgType, data, err := ws.websocket.ReadMessage()
 		if err != nil {
-			return errors.Wrap(err, "login")
+			return errors.Wrap(err, "websocket read")
 		}
-		ws.logger.Println("new message", msg.Type)
-		switch msg.Type {
-		case messageTypeLogin:
-			ws.logger.Printf("login %s", msg.Data)
-			config.User = string(msg.Data)
-		case messageTypePassword:
-			config.Auth = append(config.Auth, ssh.Password(string(msg.Data)))
-			session, err = ws.newSSHXtermSession(value.conn, &config, msg)
+		if msgType == websocket.BinaryMessage {
+			_, err = ws.sftpSess.stdin.Write(data)
 			if err != nil {
-				return errors.Wrap(err, "password")
+				return errors.Wrap(err, "write sftp")
 			}
-			defer session.Close()
-			stdin, err = session.StdinPipe()
+			continue
+		} else {
+			err = json.Unmarshal(data, &msg)
 			if err != nil {
-				return errors.Wrap(err, "stdin")
+				return errors.Wrap(err, "json unmarshal")
 			}
-			defer stdin.Close()
-			err = ws.transformOutput(session, value.websocket)
-			if err != nil {
-				return errors.Wrap(err, "stdout & stderr")
-			}
-			err = session.Shell()
-			if err != nil {
-				return errors.Wrap(err, "shell")
-			}
-		case messageTypeStdin:
-			if stdin == nil {
-				ws.logger.Println("stdin wait login")
-				continue
-			}
-			_, err = stdin.Write(msg.Data)
-			if err != nil {
-				return errors.Wrap(err, "write")
-			}
-		case messageTypeResize:
-			if session == nil {
-				ws.logger.Println("resize wait session")
-				continue
-			}
-			err = session.WindowChange(msg.Rows, msg.Cols)
-			if err != nil {
-				return errors.Wrap(err, "resize")
+			ws.logger.Println("new message", msg.Type)
+			switch msg.Type {
+			case messageTypeStdin:
+				_, err = ws.sshSess.stdin.Write(msg.Data)
+				if err != nil {
+					return errors.Wrap(err, "write ssh")
+				}
+			case messageTypeResize:
+				err = ws.sshSess.sess.WindowChange(msg.Rows, msg.Cols)
+				if err != nil {
+					return errors.Wrap(err, "resize")
+				}
 			}
 		}
 	}
 }
 
-// newSSHXtermSession start ssh xterm session
-func (ws *WebSSH) newSSHXtermSession(conn net.Conn, config *ssh.ClientConfig, msg message) (*ssh.Session, error) {
+func (ws *WebSSH) NewSSHClient(conn net.Conn, config *ssh.ClientConfig) error {
 	var err error
 	c, chans, reqs, err := ssh.NewClientConn(conn, conn.RemoteAddr().String(), config)
 	if err != nil {
-		return nil, errors.Wrap(err, "client")
+		return errors.Wrap(err, "tcp client")
 	}
-	session, err := ssh.NewClient(c, chans, reqs).NewSession()
-	if err != nil {
-		return nil, errors.Wrap(err, "session")
-	}
-	modes := ssh.TerminalModes{ssh.ECHO: 1, ssh.TTY_OP_ISPEED: ws.buffSize, ssh.TTY_OP_OSPEED: ws.buffSize}
-	if msg.Cols == 0 {
-		msg.Cols = 40
-	}
-	if msg.Rows == 0 {
-		msg.Rows = 80
-	}
-	session.RequestPty("xterm", msg.Rows, msg.Cols, modes)
-	return session, nil
+	ws.conn = ssh.NewClient(c, chans, reqs)
+	return nil
 }
 
-// transformOutput transform shell stdout to websocket message
-func (ws *WebSSH) transformOutput(session *ssh.Session, conn *websocket.Conn) error {
+// NewSSHXtermSession start ssh xterm session
+func (ws *WebSSH) NewSSHXtermSession() error {
+	var err error
+	s, err := ws.conn.NewSession()
+	if err != nil {
+		return errors.Wrap(err, "ssh session")
+	}
+	// Set up terminal modes
+	modes := ssh.TerminalModes{
+		ssh.ECHO:          1,
+		ssh.TTY_OP_ISPEED: ws.buffSize,
+		ssh.TTY_OP_OSPEED: ws.buffSize,
+	}
+	// Request pseudo terminal
+	err = s.RequestPty("xterm", 40, 80, modes)
+	if err != nil {
+		s.Close()
+		return errors.Wrap(err, "pty")
+	}
+
+	stdin, err := s.StdinPipe()
+	if err != nil {
+		s.Close()
+		return errors.Wrap(err, "ssh stdin")
+	}
+	stdout, err := s.StdoutPipe()
+	if err != nil {
+		s.Close()
+		return errors.Wrap(err, "ssh stdout")
+	}
+	stderr, err := s.StderrPipe()
+	if err != nil {
+		s.Close()
+		return errors.Wrap(err, "ssh stderr")
+	}
+
+	ws.sshSess = &session{
+		sess:   s,
+		stdin:  stdin,
+		stdout: stdout,
+		stderr: stderr,
+	}
+	return nil
+}
+
+func (ws *WebSSH) NewSftpSession() error {
+	s, err := ws.conn.NewSession()
+	if err != nil {
+		return errors.Wrap(err, "sftp session")
+	}
+	if err := s.RequestSubsystem("sftp"); err != nil {
+		return errors.Wrap(err, "sftp subsystem")
+	}
+
+	stdin, err := s.StdinPipe()
+	if err != nil {
+		s.Close()
+		return errors.Wrap(err, "sftp stdin")
+	}
+	stdout, err := s.StdoutPipe()
+	if err != nil {
+		s.Close()
+		return errors.Wrap(err, "sftp stdout")
+	}
+	ws.sftpSess = &session{
+		sess:   s,
+		stdin:  stdin,
+		stdout: stdout,
+	}
+	return nil
+}
+
+func unmarshalUint32(b []byte) (uint32, []byte) {
+	v := uint32(b[3]) | uint32(b[2])<<8 | uint32(b[1])<<16 | uint32(b[0])<<24
+	return v, b[4:]
+}
+
+func (ws *WebSSH) transformOutput(ssh *session, sftp *session, conn *websocket.Conn) error {
 	ws.logger.Println("transfer")
-	stdout, err := session.StdoutPipe()
-	if err != nil {
-		return errors.Wrap(err, "stdout")
-	}
-	stderr, err := session.StderrPipe()
-	if err != nil {
-		errors.Wrap(err, "stderr")
-	}
-	copyToMessage := func(t messageType, r io.Reader) {
+	copyShellOutput := func(t messageType, r io.Reader) {
 		ws.logger.Println("copy to", t)
 		buff := make([]byte, ws.buffSize)
 		for {
@@ -223,7 +245,34 @@ func (ws *WebSSH) transformOutput(session *ssh.Session, conn *websocket.Conn) er
 			}
 		}
 	}
-	go copyToMessage(messageTypeStdout, stdout)
-	go copyToMessage(messageTypeStderr, stderr)
+	copySftpOutput := func(r io.Reader) {
+		buf := make([]byte, ws.buffSize)
+		for {
+			if _, err := io.ReadFull(r, buf[:4]); err != nil {
+				ws.logger.Printf("sftp read length failed %v", err)
+				return
+			}
+			length, _ := unmarshalUint32(buf)
+			if length > ws.buffSize-4 {
+				ws.logger.Printf("recv packet %d bytes too long", length)
+				return
+			}
+			if length == 0 {
+				ws.logger.Printf("recv packet of 0 bytes too short")
+				return
+			}
+			if _, err := io.ReadFull(r, buf[4:length+4]); err != nil {
+				ws.logger.Printf("recv packet %d bytes: err %v", length, err)
+				return
+			}
+			if err := conn.WriteMessage(websocket.BinaryMessage, buf[:length+4]); err != nil {
+				ws.logger.Printf("sftp write failed %v", err)
+				return
+			}
+		}
+	}
+	go copyShellOutput(messageTypeStdout, ssh.stdout)
+	go copyShellOutput(messageTypeStderr, ssh.stderr)
+	go copySftpOutput(sftp.stdout)
 	return nil
 }

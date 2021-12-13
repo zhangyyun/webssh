@@ -6,7 +6,7 @@ const [user, password] = auth.split(":");
 const term = new Terminal();
 term.open(document.getElementById("main"));
 
-const ws = new WebSocket(`ws://${location.host}/api/ssh?addr=${addr}`);
+const ws = new WebSocket(`ws://${location.host}/api/ssh?token=127.0.0.1:22&user=zhangsan`);
 ws.onopen = () => {
   ws.send(JSON.stringify({ type: "login", data: utoa(user) }));
   ws.send(JSON.stringify({ type: "password", data: utoa(password) }));
