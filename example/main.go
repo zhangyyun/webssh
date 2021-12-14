@@ -1,7 +1,6 @@
 package main
 
 import (
-	"log"
 	"net"
 	"net/http"
 
@@ -17,9 +16,29 @@ func main() {
 		token := r.URL.Query().Get("token")
 		user := r.URL.Query().Get("user")
 		var wssh = webssh.NewWebSSH(id)
-		conn, err := net.Dial("tcp", token)
+
+		if user == "" || token == "" {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+
+		ip, err := webssh.Query(token)
 		if err != nil {
-			log.Panic(err)
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.WriteHeader(http.StatusInternalServerError)
+
+			w.Write([]byte(err.Error()))
+			return
+		}
+		if ip == "" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+
+		conn, err := net.Dial("tcp", ip+":22")
+		if err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
 		}
 
 		config := ssh.ClientConfig{
@@ -29,18 +48,22 @@ func main() {
 				ssh.Password(""),
 			},
 		}
+
 		err = wssh.NewSSHClient(conn, &config)
-		if err != nil {
-			log.Panic(err)
+		if err == nil {
+			err = wssh.NewSSHXtermSession()
+			if err == nil {
+				err = wssh.NewSftpSession()
+			}
 		}
 
-		err = wssh.NewSSHXtermSession()
 		if err != nil {
-			log.Panic(err)
-		}
-		err = wssh.NewSftpSession()
-		if err != nil {
-			log.Panic(err)
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(err.Error()))
+
+			wssh.Cleanup()
+			return
 		}
 
 		upgrader := websocket.Upgrader{
@@ -54,10 +77,10 @@ func main() {
 		}
 		ws, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
-			log.Panic(err)
+			wssh.Cleanup()
+			return
 		}
 		wssh.AddWebsocket(ws)
 	})
-	log.Println("start")
 	http.ListenAndServe(":80", nil)
 }
