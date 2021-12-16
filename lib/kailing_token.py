@@ -25,4 +25,4 @@ class Token:
 if __name__ == "__main__":
     token = Token("")
 
-    print(token.lookup("test"))
+    print(token.lookup("7ff149ff-b71e-4e11-8330-4f8ea7cb7131"))

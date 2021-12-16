@@ -31,8 +31,14 @@ func try_init() (naming_client.INamingClient, error) {
 	passwd := os.Getenv("NACOS_SERVER_PASSWORD")
 	cidr := os.Getenv("AGENT_CIDR")
 
-	if ip == "" || port == "" || cidr == "" {
-		return nil, errors.New("environment variables missing")
+	if cidr == "" {
+		return nil, errors.New("environ AGENT_CIDR missing")
+	}
+	if ip == "" {
+		ip = "127.0.0.1"
+	}
+	if port == "" {
+		port = "8848"
 	}
 	if name == "" {
 		name = "nacos"
@@ -82,13 +88,13 @@ func Query(token string) (string, error) {
 		}
 	}
 	instance, err := client.SelectOneHealthyInstance(vo.SelectOneHealthInstanceParam{
-		ServiceName: "demo.go",
+		ServiceName: "linyun-gateway",
 	})
 	if err != nil {
 		return "", err
 	}
 
-	path := fmt.Sprintf("http://%s:%d/x?token=%s", instance.Ip, instance.Port, url.QueryEscape(token))
+	path := fmt.Sprintf("http://%s:%d/cm/desktop/ip_info?token=%s", instance.Ip, instance.Port, url.QueryEscape(token))
 	res, err := http.Get(path)
 	if err != nil {
 		return "", err

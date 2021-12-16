@@ -4,7 +4,7 @@ package main
 import "C"
 import (
 	"fmt"
-	"github.com/myml/webssh"
+	"github.com/myml/webssh/webssh"
 	"unsafe"
 )
 
