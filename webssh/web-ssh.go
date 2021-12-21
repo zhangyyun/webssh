@@ -113,11 +113,32 @@ func (ws *WebSSH) server() error {
 			return errors.Wrap(err, "websocket read")
 		}
 		if msgType == websocket.BinaryMessage {
+			if data[4] == 5 { //blacklist SSH_FXP_READ
+				errMsg := os.ErrPermission.Error()
+				langTag := "en"
+
+				l := 4 + 1 + 4 + // uint32(length)+byte(type)+uint32(id)
+					4 +
+					4 + len(errMsg) +
+					4 + len(langTag)
+				buf := make([]byte, 0, l)
+				buf = marshalUint32(buf, uint32(l-4))
+				buf = append(buf, byte(101))    //type SSH_FXP_STATUS
+				buf = append(buf, data[5:9]...) //id
+				buf = marshalUint32(buf, 3)     //code SSH_FX_PERMISSION_DENIED
+				buf = append(marshalUint32(buf, uint32(len(errMsg))), errMsg...)
+				buf = append(marshalUint32(buf, uint32(len(langTag))), langTag...)
+
+				err = ws.websocket.WriteMessage(websocket.BinaryMessage, buf)
+				if err != nil {
+					return errors.Wrap(err, "deny read")
+				}
+				continue
+			}
 			_, err = ws.sftpSess.stdin.Write(data)
 			if err != nil {
 				return errors.Wrap(err, "write sftp")
 			}
-			continue
 		} else {
 			err = json.Unmarshal(data, &msg)
 			if err != nil {
@@ -220,6 +241,10 @@ func (ws *WebSSH) NewSftpSession() error {
 		stdout: stdout,
 	}
 	return nil
+}
+
+func marshalUint32(b []byte, v uint32) []byte {
+	return append(b, byte(v>>24), byte(v>>16), byte(v>>8), byte(v))
 }
 
 func unmarshalUint32(b []byte) (uint32, []byte) {
