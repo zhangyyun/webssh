@@ -11,10 +11,10 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/gorilla/websocket"
 	"github.com/myml/webssh/webssh"
 	"github.com/spf13/cobra"
-        "github.com/gorilla/websocket"
-        "golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh"
 )
 
 var (

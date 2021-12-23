@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/pkg/errors"
@@ -17,6 +18,7 @@ func NewWebSSH(id string) *WebSSH {
 		id:       id,
 		buffSize: 256 * 1024,
 		logger:   log.New(os.Stdout, "[webssh] ", log.Ltime|log.Ldate),
+		ch:       make(chan struct{}, 1),
 	}
 }
 
@@ -45,20 +47,30 @@ type WebSSH struct {
 	conn      *ssh.Client
 	sshSess   *session
 	sftpSess  *session
+	ch        chan struct{}
 }
 
 func (ws *WebSSH) Cleanup() {
+	ws.logger.Printf("cleanup")
 	if ws.sshSess != nil {
 		ws.sshSess.close()
+		ws.sshSess = nil
 	}
 	if ws.sftpSess != nil {
 		ws.sftpSess.close()
+		ws.sftpSess = nil
 	}
 	if ws.conn != nil {
 		ws.conn.Close()
+		ws.conn = nil
 	}
 	if ws.websocket != nil {
 		ws.websocket.Close()
+		ws.websocket = nil
+	}
+	if ws.ch != nil {
+		close(ws.ch)
+		ws.ch = nil
 	}
 }
 
@@ -97,6 +109,12 @@ func (ws *WebSSH) AddWebsocket(conn *websocket.Conn) {
 
 func (ws *WebSSH) server() error {
 	defer ws.Cleanup()
+
+	//disable tcp keepalive, use websocket ping/pong instead
+	ws.websocket.UnderlyingConn().(*net.TCPConn).SetKeepAlive(false)
+
+	ws.websocket.SetPongHandler(func(string) error { ws.ch <- struct{}{}; return nil })
+	go ws.keepAliveProc()
 
 	if err := ws.transformOutput(ws.sshSess, ws.sftpSess, ws.websocket); err != nil {
 		return err
@@ -156,6 +174,34 @@ func (ws *WebSSH) server() error {
 				if err != nil {
 					return errors.Wrap(err, "resize")
 				}
+			}
+		}
+	}
+}
+
+func (ws *WebSSH) keepAliveProc() {
+	cnt := 0
+	for {
+		timer := time.NewTimer(time.Minute)
+		select {
+		case _, ok := <-ws.ch:
+			if !ok {
+				ws.logger.Printf("websocket keepalive channel closed")
+				return
+			}
+			cnt = 0
+		case <-timer.C:
+			err := ws.websocket.WriteControl(websocket.PingMessage, []byte("webssh"), time.Time{})
+			if err != nil {
+				ws.logger.Printf("websocket ping failed %v", err)
+				break
+			}
+
+			cnt++
+			if cnt > 3 {
+				ws.logger.Printf("websocket client not responding")
+				ws.Cleanup()
+				return
 			}
 		}
 	}
