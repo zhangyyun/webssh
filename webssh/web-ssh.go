@@ -1,6 +1,7 @@
 package webssh
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log"
@@ -125,11 +126,23 @@ func (ws *WebSSH) server() error {
 		return errors.Wrap(err, "shell")
 	}
 	for {
+		ctx, cancel := context.WithCancel(context.Background())
+		go func(ctx context.Context) {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(30 * time.Minute):
+				ws.logger.Printf("no user input, closing...")
+				ws.Cleanup()
+			}
+		}(ctx)
+
 		var msg message
 		msgType, data, err := ws.websocket.ReadMessage()
 		if err != nil {
 			return errors.Wrap(err, "websocket read")
 		}
+		cancel()
 		if msgType == websocket.BinaryMessage {
 			if data[4] == 5 { //blacklist SSH_FXP_READ
 				errMsg := os.ErrPermission.Error()
@@ -181,8 +194,9 @@ func (ws *WebSSH) server() error {
 
 func (ws *WebSSH) keepAliveProc() {
 	cnt := 0
+	tick := time.NewTicker(time.Minute)
+	defer tick.Stop()
 	for {
-		timer := time.NewTimer(time.Minute)
 		select {
 		case _, ok := <-ws.ch:
 			if !ok {
@@ -190,7 +204,7 @@ func (ws *WebSSH) keepAliveProc() {
 				return
 			}
 			cnt = 0
-		case <-timer.C:
+		case <-tick.C:
 			err := ws.websocket.WriteControl(websocket.PingMessage, []byte("webssh"), time.Time{})
 			if err != nil {
 				ws.logger.Printf("websocket ping failed %v", err)
