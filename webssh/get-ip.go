@@ -100,7 +100,7 @@ func Query(token string) (string, error) {
 		return "", err
 	}
 	if res.StatusCode == 404 {
-		return "", nil
+		return "", errors.New("token not found")
 	}
 	if res.StatusCode > 299 {
 		return "", errors.New(fmt.Sprintf("GET response code %d", res.StatusCode))
