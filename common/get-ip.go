@@ -62,8 +62,9 @@ func try_init() (naming_client.INamingClient, error) {
 	cc := constant.NewClientConfig(
 		constant.WithUsername(name),
 		constant.WithPassword(passwd),
-		constant.WithCacheDir("/var/cache/nacos/"),
-		constant.WithLogLevel("debug"),
+		constant.WithCacheDir("/var/cache/nacos"),
+		constant.WithLogDir("/var/log/nacos"),
+		//constant.WithLogLevel("debug"),
 	)
 
 	client, err := clients.NewNamingClient(

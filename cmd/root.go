@@ -6,6 +6,7 @@ package cmd
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -25,10 +26,10 @@ var (
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
 	Use:   "webssh",
-	Short: "A ssh&sftp proxy",
-	Long: `WebSSH proxy websocket to ssh.
+	Short: "A ssh&vnc proxy",
+	Long: `WebSSH proxy websocket to ssh or vnc.
 
-It enables a web client to ssh to the destination host.`,
+It enables a web client to connect to the destination host.`,
 	// Uncomment the following line if your bare application
 	// has an action associated with it:
 	Run: serve,
@@ -67,15 +68,18 @@ func serve(cmd *cobra.Command, args []string) {
 		id := r.Header.Get("Sec-WebSocket-Key")
 		token := r.URL.Query().Get("token")
 		user := r.URL.Query().Get("user")
-		var wssh = webssh.NewWebSSH(id)
 
 		if user == "" || token == "" {
 			w.WriteHeader(http.StatusForbidden)
 			return
 		}
 
+		logger := log.New(os.Stdout, "["+id+"] ", log.Ltime|log.Ldate)
+		wssh := webssh.NewWebSSH(logger)
+
 		conn, err, respCode := common.GetTargetConn(token, 22)
 		if conn == nil {
+			logger.Printf("ssh get target connection failed with %d(%s)", respCode, err)
 			if respCode == 0 {
 				respCode = http.StatusInternalServerError
 			}
@@ -107,6 +111,8 @@ func serve(cmd *cobra.Command, args []string) {
 		}
 
 		if err != nil {
+			logger.Printf("ssh create sessions failed %s", err)
+
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.WriteHeader(http.StatusInternalServerError)
 			w.Write([]byte(err.Error()))
@@ -117,6 +123,7 @@ func serve(cmd *cobra.Command, args []string) {
 
 		ws, err := common.Upgrade(w, r)
 		if err != nil {
+			logger.Printf("ssh upgrade websocket failed %s", err)
 			wssh.Cleanup()
 			return
 		}
@@ -129,8 +136,12 @@ func serve(cmd *cobra.Command, args []string) {
 			w.WriteHeader(http.StatusForbidden)
 			return
 		}
+
+		logger := log.New(os.Stdout, "["+id+"] ", log.Ltime|log.Ldate)
+
 		conn, err, respCode := common.GetTargetConn(token, 5901)
 		if conn == nil {
+			logger.Printf("vnc get target connection failed with %d(%s)", respCode, err)
 			if respCode == 0 {
 				respCode = http.StatusInternalServerError
 			}
@@ -147,11 +158,12 @@ func serve(cmd *cobra.Command, args []string) {
 
 		ws, err := common.Upgrade(w, r)
 		if err != nil {
+			logger.Printf("vnc upgrade websocket failed %s", err)
 			conn.Close()
 			return
 		}
 
-		vnc.Proxy(id, ws, conn)
+		vnc.Proxy(logger, ws, conn)
 	})
 	http.ListenAndServe(fmt.Sprintf(":%d", port), nil)
 }

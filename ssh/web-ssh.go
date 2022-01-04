@@ -14,11 +14,10 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-func NewWebSSH(id string) *WebSSH {
+func NewWebSSH(logger *log.Logger) *WebSSH {
 	return &WebSSH{
-		id:       id,
 		buffSize: 256 * 1024,
-		logger:   log.New(os.Stdout, "[webssh] ", log.Ltime|log.Ldate),
+		logger:   logger,
 		ch:       make(chan struct{}, 1),
 	}
 }
@@ -41,7 +40,6 @@ func (s *session) close() {
 }
 
 type WebSSH struct {
-	id        string
 	logger    *log.Logger
 	buffSize  uint32
 	websocket *websocket.Conn
@@ -75,40 +73,24 @@ func (ws *WebSSH) Cleanup() {
 	}
 }
 
-func (ws *WebSSH) SetId(id string) {
-	ws.id = id
-}
-
-// SetLogger set logger
-func (ws *WebSSH) SetLogger(logger *log.Logger) *WebSSH {
-	ws.logger = logger
-	return ws
-}
-
 // SetBuffSize set buff size
 func (ws *WebSSH) SetBuffSize(buffSize uint32) *WebSSH {
 	ws.buffSize = buffSize
 	return ws
 }
 
-// SetLogOut set logger output
-func (ws *WebSSH) SetLogOut(out io.Writer) *WebSSH {
-	ws.logger.SetOutput(out)
-	return ws
-}
-
 // AddWebsocket add websocket connect
 func (ws *WebSSH) AddWebsocket(conn *websocket.Conn) {
-	ws.logger.Println("add websocket", ws.id)
-
 	ws.websocket = conn
 
 	go func() {
-		ws.logger.Printf("%s server exit %v", ws.id, ws.server())
+		ws.logger.Printf("server exit %v", ws.server())
 	}()
 }
 
 func (ws *WebSSH) server() error {
+	ws.logger.Printf("ssh start working")
+
 	defer ws.Cleanup()
 
 	//disable tcp keepalive, use websocket ping/pong instead
@@ -175,7 +157,6 @@ func (ws *WebSSH) server() error {
 			if err != nil {
 				return errors.Wrap(err, "json unmarshal")
 			}
-			ws.logger.Println("new message", msg.Type)
 			switch msg.Type {
 			case messageTypeStdin:
 				_, err = ws.sshSess.stdin.Write(msg.Data)
@@ -313,19 +294,17 @@ func unmarshalUint32(b []byte) (uint32, []byte) {
 }
 
 func (ws *WebSSH) transformOutput(ssh *session, sftp *session, conn *websocket.Conn) error {
-	ws.logger.Println("transfer")
 	copyShellOutput := func(t messageType, r io.Reader) {
-		ws.logger.Println("copy to", t)
 		buff := make([]byte, ws.buffSize)
 		for {
 			n, err := r.Read(buff)
 			if err != nil {
-				ws.logger.Printf("%s read fail", t)
+				ws.logger.Printf("%s read failed %v", t, err)
 				return
 			}
 			err = conn.WriteJSON(&message{Type: t, Data: buff[:n]})
 			if err != nil {
-				ws.logger.Printf("%s write fail", t)
+				ws.logger.Printf("%s write failed %s", t, err)
 				return
 			}
 		}
