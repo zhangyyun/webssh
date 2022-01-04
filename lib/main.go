@@ -4,13 +4,13 @@ package main
 import "C"
 import (
 	"fmt"
-	"github.com/myml/webssh/webssh"
+	"github.com/myml/webssh/common"
 	"unsafe"
 )
 
 //export query
 func query(token *C.char) *C.char {
-	ip, err := webssh.Query(C.GoString(token))
+	ip, err := common.Query(C.GoString(token))
 	if err != nil {
 		fmt.Println(err.Error())
 		return nil

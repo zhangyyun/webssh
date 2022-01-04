@@ -1,0 +1,28 @@
+# syntax=docker/dockerfile:1
+
+ARG ALPINE_VER=3.15
+FROM golang:1.17.5-alpine${ALPINE_VER} AS build
+
+WORKDIR /app
+COPY ./ ./
+
+ARG GOPROXY=https://goproxy.cn
+RUN go build -o webssh main.go
+
+FROM alpine:${ALPINE_VER}
+RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apk/repositories \
+	&& apk add tini
+ENTRYPOINT ["/sbin/tini", "--"]
+
+WORKDIR /
+
+COPY --from=build /app/webssh ./webssh
+
+ENV NACOS_SERVER_IP=
+ENV NACOS_SERVER_PORT=8848
+ENV NACOS_SERVER_USERNAME=
+ENV NACOS_SERVER_PASSWORD=
+ENV AGENT_CIDR=
+
+EXPOSE 80/tcp
+CMD ["/webssh"]

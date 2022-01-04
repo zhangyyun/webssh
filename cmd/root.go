@@ -6,13 +6,13 @@ package cmd
 
 import (
 	"fmt"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 
-	"github.com/gorilla/websocket"
-	"github.com/myml/webssh/webssh"
+	"github.com/myml/webssh/common"
+	webssh "github.com/myml/webssh/ssh"
+	"github.com/myml/webssh/vnc"
 	"github.com/spf13/cobra"
 	"golang.org/x/crypto/ssh"
 )
@@ -63,7 +63,7 @@ func serve(cmd *cobra.Command, args []string) {
 			http.Handle("/", http.FileServer(http.Dir(web)))
 		}
 	}
-	http.HandleFunc("/api/ssh", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/ssh", func(w http.ResponseWriter, r *http.Request) {
 		id := r.Header.Get("Sec-WebSocket-Key")
 		token := r.URL.Query().Get("token")
 		user := r.URL.Query().Get("user")
@@ -74,22 +74,19 @@ func serve(cmd *cobra.Command, args []string) {
 			return
 		}
 
-		ip, err := webssh.Query(token)
-		if err != nil {
-			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-			w.WriteHeader(http.StatusInternalServerError)
+		conn, err, respCode := common.GetTargetConn(token, 22)
+		if conn == nil {
+			if respCode == 0 {
+				respCode = http.StatusInternalServerError
+			}
+			if err != nil {
+				w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+				w.WriteHeader(respCode)
 
-			w.Write([]byte(err.Error()))
-			return
-		}
-		if ip == "" {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-
-		conn, err := net.Dial("tcp", ip+":22")
-		if err != nil {
-			w.WriteHeader(http.StatusServiceUnavailable)
+				w.Write([]byte(err.Error()))
+			} else {
+				w.WriteHeader(respCode)
+			}
 			return
 		}
 
@@ -118,21 +115,43 @@ func serve(cmd *cobra.Command, args []string) {
 			return
 		}
 
-		upgrader := websocket.Upgrader{
-			// cross origin domain
-			CheckOrigin: func(r *http.Request) bool {
-				return true
-			},
-			Subprotocols:    []string{"webssh"},
-			ReadBufferSize:  4096,
-			WriteBufferSize: 4096,
-		}
-		ws, err := upgrader.Upgrade(w, r, nil)
+		ws, err := common.Upgrade(w, r)
 		if err != nil {
 			wssh.Cleanup()
 			return
 		}
 		wssh.AddWebsocket(ws)
+	})
+	http.HandleFunc("/vnc", func(w http.ResponseWriter, r *http.Request) {
+		id := r.Header.Get("Sec-WebSocket-Key")
+		token := r.URL.Query().Get("token")
+		if token == "" {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		conn, err, respCode := common.GetTargetConn(token, 5901)
+		if conn == nil {
+			if respCode == 0 {
+				respCode = http.StatusInternalServerError
+			}
+			if err != nil {
+				w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+				w.WriteHeader(respCode)
+
+				w.Write([]byte(err.Error()))
+			} else {
+				w.WriteHeader(respCode)
+			}
+			return
+		}
+
+		ws, err := common.Upgrade(w, r)
+		if err != nil {
+			conn.Close()
+			return
+		}
+
+		vnc.Proxy(id, ws, conn)
 	})
 	http.ListenAndServe(fmt.Sprintf(":%d", port), nil)
 }
