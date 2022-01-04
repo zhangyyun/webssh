@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/myml/webssh/common"
 	"github.com/pkg/errors"
 	"golang.org/x/crypto/ssh"
 )
@@ -93,11 +94,11 @@ func (ws *WebSSH) server() error {
 
 	defer ws.Cleanup()
 
-	//disable tcp keepalive, use websocket ping/pong instead
-	ws.websocket.UnderlyingConn().(*net.TCPConn).SetKeepAlive(false)
-
-	ws.websocket.SetPongHandler(func(string) error { ws.ch <- struct{}{}; return nil })
-	go ws.keepAliveProc()
+	go func() {
+		if ok := common.KeepAlive(ws.websocket, ws.ch, ws.logger); !ok {
+			ws.Cleanup()
+		}
+	}()
 
 	if err := ws.transformOutput(ws.sshSess, ws.sftpSess, ws.websocket); err != nil {
 		return err
@@ -121,10 +122,11 @@ func (ws *WebSSH) server() error {
 
 		var msg message
 		msgType, data, err := ws.websocket.ReadMessage()
+		cancel()
+
 		if err != nil {
 			return errors.Wrap(err, "websocket read")
 		}
-		cancel()
 		if msgType == websocket.BinaryMessage {
 			if data[4] == 5 { //blacklist SSH_FXP_READ
 				errMsg := os.ErrPermission.Error()
@@ -168,35 +170,6 @@ func (ws *WebSSH) server() error {
 				if err != nil {
 					return errors.Wrap(err, "resize")
 				}
-			}
-		}
-	}
-}
-
-func (ws *WebSSH) keepAliveProc() {
-	cnt := 0
-	tick := time.NewTicker(time.Minute)
-	defer tick.Stop()
-	for {
-		select {
-		case _, ok := <-ws.ch:
-			if !ok {
-				ws.logger.Printf("websocket keepalive channel closed")
-				return
-			}
-			cnt = 0
-		case <-tick.C:
-			err := ws.websocket.WriteControl(websocket.PingMessage, []byte("webssh"), time.Time{})
-			if err != nil {
-				ws.logger.Printf("websocket ping failed %v", err)
-				break
-			}
-
-			cnt++
-			if cnt > 3 {
-				ws.logger.Printf("websocket client not responding")
-				ws.Cleanup()
-				return
 			}
 		}
 	}

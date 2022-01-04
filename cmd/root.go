@@ -163,7 +163,7 @@ func serve(cmd *cobra.Command, args []string) {
 			return
 		}
 
-		vnc.Proxy(logger, ws, conn)
+		go vnc.Proxy(logger, ws, conn)
 	})
 	http.ListenAndServe(fmt.Sprintf(":%d", port), nil)
 }
