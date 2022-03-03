@@ -6,12 +6,15 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/myml/webssh/common"
+	"github.com/myml/webssh/dcv"
 	webssh "github.com/myml/webssh/ssh"
 	"github.com/myml/webssh/vnc"
 	"github.com/spf13/cobra"
@@ -121,7 +124,8 @@ func serve(cmd *cobra.Command, args []string) {
 			return
 		}
 
-		ws, err := common.Upgrade(w, r)
+		upgradeHeader := http.Header{"Sec-Websocket-Protocol": []string{"webssh"}}
+		ws, err := common.Upgrade(w, r, upgradeHeader)
 		if err != nil {
 			logger.Printf("ssh upgrade websocket failed %s", err)
 			wssh.Cleanup()
@@ -156,7 +160,8 @@ func serve(cmd *cobra.Command, args []string) {
 			return
 		}
 
-		ws, err := common.Upgrade(w, r)
+		upgradeHeader := http.Header{"Sec-Websocket-Protocol": []string{"webssh"}}
+		ws, err := common.Upgrade(w, r, upgradeHeader)
 		if err != nil {
 			logger.Printf("vnc upgrade websocket failed %s", err)
 			conn.Close()
@@ -164,6 +169,61 @@ func serve(cmd *cobra.Command, args []string) {
 		}
 
 		go vnc.Proxy(logger, ws, conn)
+	})
+	http.HandleFunc("/dcv/", func(w http.ResponseWriter, r *http.Request) {
+		id := r.Header.Get("Sec-WebSocket-Key")
+		ss := strings.SplitN(r.URL.Path, "/", 4)
+		if len(ss) < 3 || ss[2] == "" {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		token := ss[2]
+		path := ""
+		if len(ss) == 4 {
+			path = ss[3]
+		}
+
+		logger := log.New(os.Stdout, "["+id+"/"+path+"] ", log.Ltime|log.Ldate)
+
+		connBackend, rsp, err := common.Client(token, path, r)
+		if connBackend == nil || err != nil {
+			if err != nil {
+				logger.Printf("dcv get target connection failed with (%s)", err)
+			}
+			if rsp != nil {
+				for k, vv := range rsp.Header {
+					for _, v := range vv {
+						w.Header().Add(k, v)
+					}
+				}
+				w.WriteHeader(rsp.StatusCode)
+
+				io.Copy(w, rsp.Body)
+
+			} else {
+				w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+				w.WriteHeader(http.StatusBadRequest)
+
+				w.Write([]byte(err.Error()))
+			}
+			return
+		}
+
+		upgradeHeader := http.Header{}
+		if hdr := rsp.Header.Get("Sec-Websocket-Protocol"); hdr != "" {
+			upgradeHeader.Set("Sec-Websocket-Protocol", hdr)
+		}
+		if hdr := rsp.Header.Get("Server"); hdr != "" {
+			upgradeHeader.Set("Server", hdr)
+		}
+		connFrontend, err := common.Upgrade(w, r, upgradeHeader)
+		if err != nil {
+			logger.Printf("dcv upgrade websocket failed %s", err)
+			connBackend.Close()
+			return
+		}
+
+		go dcv.Proxy(logger, connFrontend, connBackend)
 	})
 	http.ListenAndServe(fmt.Sprintf(":%d", port), nil)
 }

@@ -11,7 +11,7 @@ import (
 )
 
 func Proxy(logger *log.Logger, ws *websocket.Conn, conn net.Conn) {
-	logger.Printf("vnc start working")
+	logger.Printf("vnc start working %s->%s", ws.RemoteAddr().String(), conn.RemoteAddr().String())
 
 	ch := make(chan struct{}, 1)
 	defer conn.Close()

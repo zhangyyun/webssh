@@ -90,7 +90,7 @@ func (ws *WebSSH) AddWebsocket(conn *websocket.Conn) {
 }
 
 func (ws *WebSSH) server() error {
-	ws.logger.Printf("ssh start working")
+	ws.logger.Printf("ssh start working %s->%s", ws.websocket.RemoteAddr().String(), ws.conn.RemoteAddr().String())
 
 	defer ws.Cleanup()
 
