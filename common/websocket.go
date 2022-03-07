@@ -1,6 +1,7 @@
 package common
 
 import (
+	"context"
 	"crypto/tls"
 	"log"
 	"net"
@@ -9,8 +10,6 @@ import (
 
 	"github.com/gorilla/websocket"
 )
-
-const BufferSize = 4096
 
 func Upgrade(w http.ResponseWriter, r *http.Request, responseHeader http.Header) (*websocket.Conn, error) {
 	upgrader := websocket.Upgrader{
@@ -54,6 +53,33 @@ func KeepAlive(conn *websocket.Conn, ch chan struct{}, logger *log.Logger) bool 
 			}
 		}
 	}
+}
+
+func ReadMessageWithIdleTime(conn *websocket.Conn, logger *log.Logger) (messageType int, p []byte, err error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	go func(ctx context.Context) {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Duration(IdleTime) * time.Minute):
+			logger.Printf("no user input, closing...")
+			Shutdown(conn, "session expired")
+		}
+	}(ctx)
+
+	msgType, p, err := conn.ReadMessage()
+	cancel()
+	return msgType, p, err
+}
+
+func Shutdown(conn *websocket.Conn, msg string) error {
+	message := websocket.FormatCloseMessage(websocket.CloseGoingAway, msg)
+
+	err := conn.WriteControl(websocket.CloseMessage, message, time.Time{})
+	if err != nil && err != websocket.ErrCloseSent {
+		return conn.Close()
+	}
+	return nil
 }
 
 func Client(token, path string, r *http.Request) (*websocket.Conn, *http.Response, error) {

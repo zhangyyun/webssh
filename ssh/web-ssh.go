@@ -1,13 +1,11 @@
 package ssh
 
 import (
-	"context"
 	"encoding/json"
 	"io"
 	"log"
 	"net"
 	"os"
-	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/myml/webssh/common"
@@ -109,20 +107,9 @@ func (ws *WebSSH) server() error {
 		return errors.Wrap(err, "shell")
 	}
 	for {
-		ctx, cancel := context.WithCancel(context.Background())
-		go func(ctx context.Context) {
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(30 * time.Minute):
-				ws.logger.Printf("no user input, closing...")
-				ws.Cleanup()
-			}
-		}(ctx)
-
 		var msg message
-		msgType, data, err := ws.websocket.ReadMessage()
-		cancel()
+
+		msgType, data, err := common.ReadMessageWithIdleTime(ws.websocket, ws.logger)
 
 		if err != nil {
 			return errors.Wrap(err, "websocket read")

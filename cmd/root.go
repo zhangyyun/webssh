@@ -58,6 +58,7 @@ func init() {
 	// when this action is called directly.
 	rootCmd.Flags().Uint16VarP(&port, "port", "p", 80, "port to listen on")
 	rootCmd.Flags().StringVar(&web, "web", "", "web dir to serve")
+	rootCmd.Flags().IntVarP(&common.IdleTime, "idle", "", 30, "idle time waited")
 }
 
 func serve(cmd *cobra.Command, args []string) {
