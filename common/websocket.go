@@ -55,7 +55,7 @@ func KeepAlive(conn *websocket.Conn, ch chan struct{}, logger *log.Logger) bool 
 	}
 }
 
-func ReadMessageWithIdleTime(conn *websocket.Conn, logger *log.Logger) (messageType int, p []byte, err error) {
+func ReadMessageWithIdleTime(conn *websocket.Conn, logger *log.Logger) (int, []byte, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func(ctx context.Context) {
 		select {

@@ -161,8 +161,7 @@ func serve(cmd *cobra.Command, args []string) {
 			return
 		}
 
-		upgradeHeader := http.Header{"Sec-Websocket-Protocol": []string{"webssh"}}
-		ws, err := common.Upgrade(w, r, upgradeHeader)
+		ws, err := common.Upgrade(w, r, nil)
 		if err != nil {
 			logger.Printf("vnc upgrade websocket failed %s", err)
 			conn.Close()
