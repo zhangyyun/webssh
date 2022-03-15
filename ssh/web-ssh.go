@@ -46,6 +46,7 @@ type WebSSH struct {
 	sshSess   *session
 	sftpSess  *session
 	ch        chan struct{}
+	banner    string
 }
 
 func (ws *WebSSH) Cleanup() {
@@ -92,6 +93,9 @@ func (ws *WebSSH) server() error {
 
 	defer ws.Cleanup()
 
+	if ws.banner != "" {
+		ws.websocket.WriteJSON(&message{Type: messageTypeStderr, Data: []byte(ws.banner)})
+	}
 	go func() {
 		if ok := common.KeepAlive(ws.websocket, ws.ch, ws.logger); !ok {
 			ws.Cleanup()
@@ -298,5 +302,14 @@ func (ws *WebSSH) transformOutput(ssh *session, sftp *session, conn *websocket.C
 	go copyShellOutput(messageTypeStdout, ssh.stdout)
 	go copyShellOutput(messageTypeStderr, ssh.stderr)
 	go copySftpOutput(sftp.stdout)
+	return nil
+}
+
+func (ws *WebSSH) BannerDisplay(msg string) error {
+	if ws.websocket != nil {
+		return ws.websocket.WriteJSON(&message{Type: messageTypeStderr, Data: []byte(msg)})
+	} else {
+		ws.banner = msg
+	}
 	return nil
 }

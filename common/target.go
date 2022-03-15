@@ -18,7 +18,9 @@ func query(token string) (string, error) {
 
 	//if set, use token as ip directly, used for test only
 	if _, test := os.LookupEnv("WEBSSH_TEST"); test {
-		return token, nil
+		if ip := net.ParseIP(token); ip != nil {
+			return token, nil
+		}
 	}
 
 	if s == "" || p == "" || cidr == "" {

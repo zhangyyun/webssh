@@ -104,6 +104,7 @@ func serve(cmd *cobra.Command, args []string) {
 			Auth: []ssh.AuthMethod{
 				ssh.Password(""),
 			},
+			BannerCallback: wssh.BannerDisplay,
 		}
 
 		err = wssh.NewSSHClient(conn, &config)
